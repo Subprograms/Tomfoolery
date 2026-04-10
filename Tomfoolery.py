@@ -11,7 +11,7 @@ from tqdm import tqdm
 COMMON_WEB_PORTS = [80, 81, 8080, 8000, 8081, 8443, 8888, 9090, 9443]
 TOMCAT_PATHS = ["/manager/html", "/manager/status", "/host-manager/html"]
 DEFAULT_USERS = ["tomcat", "admin", "manager", "root", "both", "role1"]
-MAX_THREADS = 15
+MAX_THREADS = 5
 TIMEOUT = 3
 
 # Disable insecure request warnings for HTTPS targets
